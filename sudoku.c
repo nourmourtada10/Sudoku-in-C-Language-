@@ -939,40 +939,33 @@ void create_game_ui(UIState *ui) {
     ui->main_container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_window_set_child(ui->window, ui->main_container);
 
-    /* Top bar with menu button on left and title centered */
-    GtkWidget *top_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_widget_set_margin_start(top_bar, 15);
-    gtk_widget_set_margin_end(top_bar, 15);
-    gtk_widget_set_margin_top(top_bar, 15);
-    gtk_widget_set_margin_bottom(top_bar, 10);
-    gtk_box_append(GTK_BOX(ui->main_container), top_bar);
+    /* --- Top area container --- */
+    GtkWidget *top_area = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_append(GTK_BOX(ui->main_container), top_area);
 
-    /* Menu button at top-left */
+    /* --- Menu button horizontal box --- */
+    GtkWidget *menu_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_margin_top(menu_bar, 10); // slightly downward
+    gtk_widget_set_margin_start(menu_bar, 15);
+    gtk_widget_set_margin_end(menu_bar, 15);
+    gtk_widget_set_halign(menu_bar, GTK_ALIGN_START);
+    gtk_box_append(GTK_BOX(top_area), menu_bar);
+
+    /* Menu button */
     GtkWidget *menu_btn_top = gtk_button_new_with_label("☰ Menu");
     gtk_widget_add_css_class(menu_btn_top, "menu-btn");
-    gtk_widget_set_halign(menu_btn_top, GTK_ALIGN_START);
-    gtk_box_append(GTK_BOX(top_bar), menu_btn_top);
+    gtk_box_append(GTK_BOX(menu_bar), menu_btn_top);
     g_signal_connect(menu_btn_top, "clicked", G_CALLBACK(on_return_to_menu_clicked), ui);
 
-    /* Spacer to push title to center */
-    GtkWidget *spacer1 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_widget_set_hexpand(spacer1, TRUE);
-    gtk_box_append(GTK_BOX(top_bar), spacer1);
+    /* --- Title --- */
+    GtkWidget *title_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_halign(title_box, GTK_ALIGN_CENTER); // keeps title centered
+    gtk_widget_set_margin_top(title_box, 5); // spacing from menu button
+    gtk_box_append(GTK_BOX(top_area), title_box);
 
-    /* Title centered */
-    GtkWidget *title = gtk_label_new("SUDOKU");
-    PangoAttrList *attrs = pango_attr_list_new();
-    pango_attr_list_insert(attrs, pango_attr_size_new(24 * 1024));
-    pango_attr_list_insert(attrs, pango_attr_weight_new(PANGO_WEIGHT_BOLD));
-    gtk_label_set_attributes(GTK_LABEL(title), attrs);
-    gtk_widget_set_halign(title, GTK_ALIGN_CENTER);
-    gtk_box_append(GTK_BOX(top_bar), title);
-    pango_attr_list_unref(attrs);
+    /* Use your existing title label without changes */
+    gtk_box_append(GTK_BOX(title_box), title);
 
-    /* Spacer to balance the layout */
-    GtkWidget *spacer2 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_widget_set_hexpand(spacer2, TRUE);
-    gtk_box_append(GTK_BOX(top_bar), spacer2);
 
     /* Info bar - centered and equally spaced */
     GtkWidget *info_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
