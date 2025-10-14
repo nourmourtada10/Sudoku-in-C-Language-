@@ -54,6 +54,7 @@ void create_main_menu(UIState *ui);
 gboolean timer_tick(gpointer data);
 void update_ui(UIState *ui);
 void set_number_pad_sensitive(UIState *ui, bool sensitive);
+void on_number_clicked(GtkButton *btn, UIState *ui);
 
 /* ========== DANCING LINKS DATA STRUCTURES ========== */
 
@@ -101,30 +102,41 @@ bool has_saved_game() {
 }
 
 /* ========== SUDOKU LOGIC ========== */
-bool is_valid_placement(int grid[SIZE][SIZE], int row, int col, int num) {
+static inline bool is_valid_placement(int grid[SIZE][SIZE], int row, int col, int num) {
     for (int i = 0; i < SIZE; i++) {
-        if (grid[row][i] == num) return false;
-        if (grid[i][col] == num) return false;
+        if (grid[row][i] == num || grid[i][col] == num) return false;
     }
+    
     int sr = (row / SUBGRID) * SUBGRID;
     int sc = (col / SUBGRID) * SUBGRID;
-    for (int i = sr; i < sr + SUBGRID; i++)
-        for (int j = sc; j < sc + SUBGRID; j++)
+    int er = sr + SUBGRID;
+    int ec = sc + SUBGRID;
+    
+    for (int i = sr; i < er; i++)
+        for (int j = sc; j < ec; j++)
             if (grid[i][j] == num) return false;
     return true;
 }
 
 bool fill_grid(int grid[SIZE][SIZE], int row, int col) {
     if (row == SIZE) return true;
-    int next_row = row, next_col = col + 1;
-    if (next_col == SIZE) { next_row++; next_col = 0; }
+    
+    int next_row = row;
+    int next_col = col + 1;
+    if (next_col == SIZE) { 
+        next_row++; 
+        next_col = 0; 
+    }
 
     int nums[SIZE];
     for (int i = 0; i < SIZE; i++) nums[i] = i + 1;
     for (int i = SIZE - 1; i > 0; i--) {
         int j = rand() % (i + 1);
-        int tmp = nums[i]; nums[i] = nums[j]; nums[j] = tmp;
+        int tmp = nums[i]; 
+        nums[i] = nums[j]; 
+        nums[j] = tmp;
     }
+    
     for (int i = 0; i < SIZE; i++) {
         if (is_valid_placement(grid, row, col, nums[i])) {
             grid[row][col] = nums[i];
@@ -143,29 +155,37 @@ void generate_complete_grid(int grid[SIZE][SIZE]) {
 void remove_numbers(int grid[SIZE][SIZE], int cells_to_remove) {
     int removed = 0;
     while (removed < cells_to_remove) {
-        int r = rand() % SIZE, c = rand() % SIZE;
-        if (grid[r][c] != 0) { grid[r][c] = 0; removed++; }
+        int r = rand() % SIZE;
+        int c = rand() % SIZE;
+        if (grid[r][c] != 0) { 
+            grid[r][c] = 0; 
+            removed++; 
+        }
     }
 }
 
-void copy_grid(int src[SIZE][SIZE], int dst[SIZE][SIZE]) {
+static inline void copy_grid(int src[SIZE][SIZE], int dst[SIZE][SIZE]) {
     memcpy(dst, src, sizeof(int) * SIZE * SIZE);
 }
 
-bool is_valid(int grid[SIZE][SIZE], int row, int col, int num) {
+static inline bool is_valid(int grid[SIZE][SIZE], int row, int col, int num) {
     for (int i = 0; i < SIZE; i++) {
         if (i != col && grid[row][i] == num) return false;
         if (i != row && grid[i][col] == num) return false;
     }
+    
     int sr = (row / SUBGRID) * SUBGRID;
     int sc = (col / SUBGRID) * SUBGRID;
-    for (int i = sr; i < sr + SUBGRID; i++)
-        for (int j = sc; j < sc + SUBGRID; j++)
+    int er = sr + SUBGRID;
+    int ec = sc + SUBGRID;
+    
+    for (int i = sr; i < er; i++)
+        for (int j = sc; j < ec; j++)
             if (!(i == row && j == col) && grid[i][j] == num) return false;
     return true;
 }
 
-bool is_complete(int grid[SIZE][SIZE]) {
+static inline bool is_complete(int grid[SIZE][SIZE]) {
     for (int i = 0; i < SIZE; i++)
         for (int j = 0; j < SIZE; j++)
             if (grid[i][j] == 0) return false;
@@ -174,7 +194,7 @@ bool is_complete(int grid[SIZE][SIZE]) {
 
 /* ========== DANCING LINKS ALGORITHM ========== */
 
-DLXNode* create_node() {
+static inline DLXNode* create_node() {
     DLXNode *node = (DLXNode*)calloc(1, sizeof(DLXNode));
     node->left = node->right = node->up = node->down = node;
     node->column = NULL;
@@ -183,7 +203,7 @@ DLXNode* create_node() {
     return node;
 }
 
-void cover(DLXNode *col) {
+static inline void cover(DLXNode *col) {
     col->right->left = col->left;
     col->left->right = col->right;
     
@@ -196,7 +216,7 @@ void cover(DLXNode *col) {
     }
 }
 
-void uncover(DLXNode *col) {
+static inline void uncover(DLXNode *col) {
     for (DLXNode *row = col->up; row != col; row = row->up) {
         for (DLXNode *node = row->left; node != row; node = node->left) {
             node->column->size++;
@@ -218,11 +238,12 @@ bool search(DLXSolver *solver, int k) {
     }
     
     DLXNode *col = NULL;
-    int min_size = 999999;
+    int min_size = INT_MAX;
     for (DLXNode *c = solver->header->right; c != solver->header; c = c->right) {
         if (c->size < min_size) {
             min_size = c->size;
             col = c;
+            if (min_size <= 1) break;
         }
     }
     
@@ -312,7 +333,11 @@ void init_dlx_solver(DLXSolver *solver, int grid[SIZE][SIZE]) {
 }
 
 void free_dlx_solver(DLXSolver *solver) {
+    if (!solver) return;
+    
     for (int i = 0; i < 324; i++) {
+        if (!solver->columns[i]) continue;
+        
         DLXNode *col = solver->columns[i];
         DLXNode *row = col->down;
         while (row != col) {
@@ -328,7 +353,7 @@ void free_dlx_solver(DLXSolver *solver) {
         }
         free(col);
     }
-    free(solver->header);
+    if (solver->header) free(solver->header);
 }
 
 bool solve_dlx(SudokuGame *game, int grid[SIZE][SIZE]) {
@@ -413,8 +438,10 @@ static void draw_sudoku(GtkDrawingArea *area, cairo_t *cr, int width, int height
         for (int c = 0; c < SIZE; c++) {
             int val = game->grid[r][c];
             if (val == 0) continue;
+            
             char num[2];
-            snprintf(num, sizeof(num), "%d", val);
+            num[0] = '0' + val;
+            num[1] = '\0';
 
             cairo_text_extents_t ext;
             cairo_text_extents(cr, num, &ext);
@@ -503,7 +530,6 @@ void on_confirm_response(GtkDialog *dialog, int response, gpointer user_data) {
     }
     
     gtk_window_destroy(GTK_WINDOW(dialog));
-    g_free(data);
 }
 
 void show_confirm_dialog(UIState *ui, const char *title, const char *message, void (*callback)(UIState*)) {
@@ -524,11 +550,12 @@ void show_confirm_dialog(UIState *ui, const char *title, const char *message, vo
     gtk_widget_set_margin_bottom(label, 20);
     gtk_box_append(GTK_BOX(content), label);
     
-    ConfirmData *data = g_malloc(sizeof(ConfirmData));
+    ConfirmData *data = g_new(ConfirmData, 1);
     data->callback = callback;
     data->ui = ui;
     
     g_signal_connect(dialog, "response", G_CALLBACK(on_confirm_response), data);
+    g_signal_connect_swapped(dialog, "destroy", G_CALLBACK(g_free), data);
     gtk_window_present(GTK_WINDOW(dialog));
 }
 
@@ -576,139 +603,9 @@ gboolean timer_tick(gpointer data) {
                 }
         if (all_valid) {
             char st[128];
-            snprintf(st, sizeof(st), "🎉 Solved in %02d:%02d! Score: %d", 
-                    ui->game->seconds_elapsed / 60, ui->game->seconds_elapsed % 60, ui->game->score);
-            gtk_label_set_text(GTK_LABEL(ui->status_label), st);
-            ui->game->game_over = true;
-            set_number_pad_sensitive(ui, false);
-            save_game(ui->game);
-            
-            char msg[256];
-            snprintf(msg, sizeof(msg), "Congratulations! You solved the puzzle in %02d:%02d with a score of %d points!", 
-                    ui->game->seconds_elapsed / 60, ui->game->seconds_elapsed % 60, ui->game->score);
-            show_info_dialog(ui->window, "🎉 Puzzle Complete!", msg);
-            
-            return G_SOURCE_REMOVE;
-        }
-    }
-    
-    if (ui->game->mistakes >= MAX_MISTAKES) {
-        gtk_label_set_text(GTK_LABEL(ui->status_label), "❌ Game Over – Too many mistakes!");
-        ui->game->game_over = true;
-        set_number_pad_sensitive(ui, false);
-        save_game(ui->game);
-        show_info_dialog(ui->window, "Game Over", "You've made too many mistakes! Try again or start a new game.");
-        return G_SOURCE_REMOVE;
-    }
-
-    return G_SOURCE_CONTINUE;
-}
-
-void update_info_bar(UIState *ui) {
-    if (!ui->score_label || !ui->mistakes_label || !ui->difficulty_label || !ui->timer_label) {
-        return;
-    }
-    
-    char buf[64];
-    snprintf(buf, sizeof(buf), "Score: %d", ui->game->score);
-    gtk_label_set_text(GTK_LABEL(ui->score_label), buf);
-
-    snprintf(buf, sizeof(buf), "Mistakes: %d/%d", ui->game->mistakes, MAX_MISTAKES);
-    gtk_label_set_text(GTK_LABEL(ui->mistakes_label), buf);
-
-    const char *dstr = difficulty_to_string(ui->game->difficulty);
-    gtk_label_set_text(GTK_LABEL(ui->difficulty_label), dstr);
-
-    int s = ui->game->seconds_elapsed % 60;
-    int m = (ui->game->seconds_elapsed / 60) % 60;
-    int h = ui->game->seconds_elapsed / 3600;
-    if (h > 0) snprintf(buf, sizeof(buf), "%02d:%02d:%02d", h, m, s);
-    else snprintf(buf, sizeof(buf), "%02d:%02d", m, s);
-    gtk_label_set_text(GTK_LABEL(ui->timer_label), buf);
-}
-
-void update_ui(UIState *ui) {
-    if (ui) {
-        update_info_bar(ui);
-        if (ui->drawing_area) {
-            gtk_widget_queue_draw(ui->drawing_area);
-        }
-    }
-}
-
-/* ========== GAME ACTIONS ========== */
-
-void on_number_clicked(GtkButton *btn, UIState *ui) {
-    if (!ui || !ui->game) return;
-
-    if (ui->game->game_over) {
-        gtk_label_set_text(GTK_LABEL(ui->status_label), "Game over – start a new game!");
-        return;
-    }
-
-    if (ui->selected_row == -1 || ui->selected_col == -1) {
-        gtk_label_set_text(GTK_LABEL(ui->status_label), "Please select a cell first!");
-        return;
-    }
-
-    const char *label = gtk_button_get_label(btn);
-    int num = atoi(label);
-
-    if (ui->game->original[ui->selected_row][ui->selected_col] != 0) {
-        gtk_label_set_text(GTK_LABEL(ui->status_label), "Cannot modify original cells!");
-        return;
-    }
-
-    int prev = ui->game->grid[ui->selected_row][ui->selected_col];
-
-    if (num == 0) {
-        ui->game->grid[ui->selected_row][ui->selected_col] = 0;
-        ui->game->validation[ui->selected_row][ui->selected_col] = 0;
-        gtk_label_set_text(GTK_LABEL(ui->status_label), "Cell cleared");
-    } else {
-        ui->game->grid[ui->selected_row][ui->selected_col] = num;
-        if (is_valid(ui->game->grid, ui->selected_row, ui->selected_col, num)) {
-            ui->game->validation[ui->selected_row][ui->selected_col] = 1;
-            gtk_label_set_text(GTK_LABEL(ui->status_label), "Valid move ✓");
-
-            if (prev == 0) {
-                ui->game->score += 10;
-            }
-        } else {
-            ui->game->validation[ui->selected_row][ui->selected_col] = 2;
-            ui->game->mistakes += 1;
-            char st[128];
-            snprintf(st, sizeof(st), "Invalid move ✗ (%d/%d mistakes)", ui->game->mistakes, MAX_MISTAKES);
-            gtk_label_set_text(GTK_LABEL(ui->status_label), st);
-
-            if (ui->game->mistakes >= MAX_MISTAKES) {
-                gtk_label_set_text(GTK_LABEL(ui->status_label), "❌ Game Over – Too many mistakes!");
-                ui->game->game_over = true;
-                set_number_pad_sensitive(ui, false);
-                show_info_dialog(ui->window, "Game Over", "You've made too many mistakes! Try again or start a new game.");
-            }
-        }
-    }
-
-    ui->selected_number = ui->game->grid[ui->selected_row][ui->selected_col] > 0
-                          ? ui->game->grid[ui->selected_row][ui->selected_col] : -1;
-
-    save_game(ui->game);
-    update_ui(ui);
-
-    if (is_complete(ui->game->grid)) {
-        bool all_valid = true;
-        for (int i = 0; i < SIZE && all_valid; i++)
-            for (int j = 0; j < SIZE; j++)
-                if (ui->game->grid[i][j] != 0 && !is_valid(ui->game->grid, i, j, ui->game->grid[i][j])) { 
-                    all_valid = false; 
-                    break; 
-                }
-        if (all_valid) {
-            char st[128];
             int s = ui->game->seconds_elapsed % 60;
             int m = (ui->game->seconds_elapsed / 60) % 60;
-            snprintf(st, sizeof(st), "🎉 Puzzle solved! Time %02d:%02d – Score: %d", m, s, ui->game->score);
+            snprintf(st, sizeof(st), "Puzzle solved! Time %02d:%02d – Score: %d", m, s, ui->game->score);
             gtk_label_set_text(GTK_LABEL(ui->status_label), st);
             ui->game->game_over = true;
             set_number_pad_sensitive(ui, false);
@@ -717,9 +614,22 @@ void on_number_clicked(GtkButton *btn, UIState *ui) {
             
             char msg[256];
             snprintf(msg, sizeof(msg), "Congratulations! You solved the puzzle in %02d:%02d with a score of %d points!", m, s, ui->game->score);
-            show_info_dialog(ui->window, "🎉 Puzzle Complete!", msg);
+            show_info_dialog(ui->window, "Puzzle Complete!", msg);
+            
+            return G_SOURCE_REMOVE;
         }
     }
+
+    if (ui->game->mistakes >= MAX_MISTAKES) {
+        gtk_label_set_text(GTK_LABEL(ui->status_label), "Game Over – Too many mistakes!");
+        ui->game->game_over = true;
+        set_number_pad_sensitive(ui, false);
+        save_game(ui->game);
+        show_info_dialog(ui->window, "Game Over", "You've made too many mistakes! Try again or start a new game.");
+        return G_SOURCE_REMOVE;
+    }
+
+    return G_SOURCE_CONTINUE;
 }
 
 void on_clear_cell_clicked(GtkButton *btn, UIState *ui) {
@@ -749,7 +659,7 @@ void on_hint_clicked(GtkButton *btn, UIState *ui) {
             ui->game->grid[ui->selected_row][ui->selected_col] =
                 ui->game->solution[ui->selected_row][ui->selected_col];
             ui->game->validation[ui->selected_row][ui->selected_col] = 1;
-            gtk_label_set_text(GTK_LABEL(ui->status_label), "💡 Hint revealed!");
+            gtk_label_set_text(GTK_LABEL(ui->status_label), "Hint revealed!");
             save_game(ui->game);
             update_ui(ui);
         } else {
@@ -769,7 +679,13 @@ void on_reset_clicked(GtkButton *btn, UIState *ui) {
     ui->game->mistakes = 0;
     ui->game->seconds_elapsed = 0;
     ui->game->game_over = false;
-    if (ui->timer_id) { g_source_remove(ui->timer_id); ui->timer_id = 0; }
+    
+    /* Remove old timer if running */
+    if (ui->timer_id > 0) {
+        g_source_remove(ui->timer_id);
+        ui->timer_id = 0;
+    }
+    
     ui->timer_id = g_timeout_add_seconds(1, timer_tick, ui);
     set_number_pad_sensitive(ui, true);
     save_game(ui->game);
@@ -791,7 +707,7 @@ void on_solve_clicked(GtkButton *btn, UIState *ui) {
                 if (ui->game->original[i][j] == 0) ui->game->validation[i][j] = 1;
         update_ui(ui);
         char status[256];
-        snprintf(status, sizeof(status), "✓ Puzzle solved using DLX in %d steps!", ui->game->steps);
+        snprintf(status, sizeof(status), "Puzzle solved using DLX in %d steps!", ui->game->steps);
         gtk_label_set_text(GTK_LABEL(ui->status_label), status);
         ui->game->game_over = true;
         set_number_pad_sensitive(ui, false);
@@ -939,35 +855,34 @@ void create_game_ui(UIState *ui) {
     ui->main_container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_window_set_child(ui->window, ui->main_container);
 
-    /* --- Top area container --- */
     GtkWidget *top_area = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_append(GTK_BOX(ui->main_container), top_area);
 
-    /* --- Menu button horizontal box --- */
     GtkWidget *menu_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_widget_set_margin_top(menu_bar, 10); // slightly downward
+    gtk_widget_set_margin_top(menu_bar, 10);
     gtk_widget_set_margin_start(menu_bar, 15);
     gtk_widget_set_margin_end(menu_bar, 15);
     gtk_widget_set_halign(menu_bar, GTK_ALIGN_START);
     gtk_box_append(GTK_BOX(top_area), menu_bar);
 
-    /* Menu button */
-    GtkWidget *menu_btn_top = gtk_button_new_with_label("☰ Menu");
+    GtkWidget *menu_btn_top = gtk_button_new_with_label("Menu");
     gtk_widget_add_css_class(menu_btn_top, "menu-btn");
     gtk_box_append(GTK_BOX(menu_bar), menu_btn_top);
     g_signal_connect(menu_btn_top, "clicked", G_CALLBACK(on_return_to_menu_clicked), ui);
 
-    /* --- Title --- */
     GtkWidget *title_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_widget_set_halign(title_box, GTK_ALIGN_CENTER); // keeps title centered
-    gtk_widget_set_margin_top(title_box, 5); // spacing from menu button
+    gtk_widget_set_halign(title_box, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_top(title_box, 5);
     gtk_box_append(GTK_BOX(top_area), title_box);
 
-    /* Use your existing title label without changes */
+    GtkWidget *title = gtk_label_new("SUDOKU");
+    PangoAttrList *attrs = pango_attr_list_new();
+    pango_attr_list_insert(attrs, pango_attr_size_new(24 * 1024));
+    pango_attr_list_insert(attrs, pango_attr_weight_new(PANGO_WEIGHT_BOLD));
+    gtk_label_set_attributes(GTK_LABEL(title), attrs);
     gtk_box_append(GTK_BOX(title_box), title);
+    pango_attr_list_unref(attrs);
 
-
-    /* Info bar - centered and equally spaced */
     GtkWidget *info_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_halign(info_box, GTK_ALIGN_CENTER);
     gtk_widget_set_margin_bottom(info_box, 10);
@@ -978,7 +893,6 @@ void create_game_ui(UIState *ui) {
     ui->difficulty_label = gtk_label_new(difficulty_to_string(ui->game->difficulty));
     ui->timer_label = gtk_label_new("00:00");
 
-    /* Use grid with equal column spacing for info labels */
     GtkWidget *info_grid = gtk_grid_new();
     gtk_grid_set_column_spacing(GTK_GRID(info_grid), 30);
     gtk_grid_set_column_homogeneous(GTK_GRID(info_grid), TRUE);
@@ -989,7 +903,6 @@ void create_game_ui(UIState *ui) {
     gtk_grid_attach(GTK_GRID(info_grid), ui->difficulty_label, 2, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(info_grid), ui->timer_label, 3, 0, 1, 1);
 
-    /* Drawing area - centered with margins */
     GtkWidget *drawing_container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_set_hexpand(drawing_container, TRUE);
     gtk_widget_set_vexpand(drawing_container, TRUE);
@@ -1010,14 +923,12 @@ void create_game_ui(UIState *ui) {
 
     gtk_box_append(GTK_BOX(drawing_container), ui->drawing_area);
 
-    /* Number pad label - centered */
     GtkWidget *pad_label = gtk_label_new("Enter Number:");
     gtk_box_append(GTK_BOX(ui->main_container), pad_label);
     gtk_widget_set_halign(pad_label, GTK_ALIGN_CENTER);
     gtk_widget_set_margin_top(pad_label, 10);
     gtk_widget_set_margin_bottom(pad_label, 8);
 
-    /* Number pad - centered and equally spaced */
     GtkWidget *pad_container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_set_halign(pad_container, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(ui->main_container), pad_container);
@@ -1039,7 +950,6 @@ void create_game_ui(UIState *ui) {
         g_signal_connect(btn, "clicked", G_CALLBACK(on_number_clicked), ui);
     }
 
-    /* Action buttons - centered and equally spaced */
     GtkWidget *action_container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_set_halign(action_container, GTK_ALIGN_CENTER);
     gtk_widget_set_margin_top(action_container, 15);
@@ -1050,27 +960,26 @@ void create_game_ui(UIState *ui) {
     gtk_grid_set_column_homogeneous(GTK_GRID(action_box), TRUE);
     gtk_box_append(GTK_BOX(action_container), action_box);
 
-    GtkWidget *clear_btn = gtk_button_new_with_label("🗑️ Clear");
+    GtkWidget *clear_btn = gtk_button_new_with_label("Clear");
     gtk_widget_add_css_class(clear_btn, "action-btn");
     gtk_grid_attach(GTK_GRID(action_box), clear_btn, 0, 0, 1, 1);
     g_signal_connect(clear_btn, "clicked", G_CALLBACK(on_clear_cell_clicked), ui);
 
-    GtkWidget *hint_btn = gtk_button_new_with_label("💡 Hint");
+    GtkWidget *hint_btn = gtk_button_new_with_label("Hint");
     gtk_widget_add_css_class(hint_btn, "action-btn");
     gtk_grid_attach(GTK_GRID(action_box), hint_btn, 1, 0, 1, 1);
     g_signal_connect(hint_btn, "clicked", G_CALLBACK(on_hint_clicked), ui);
 
-    GtkWidget *solve_btn = gtk_button_new_with_label("🔍 Solve");
+    GtkWidget *solve_btn = gtk_button_new_with_label("Solve");
     gtk_widget_add_css_class(solve_btn, "action-btn");
     gtk_grid_attach(GTK_GRID(action_box), solve_btn, 2, 0, 1, 1);
     g_signal_connect(solve_btn, "clicked", G_CALLBACK(on_solve_clicked), ui);
 
-    GtkWidget *reset_btn = gtk_button_new_with_label("↺ Reset");
+    GtkWidget *reset_btn = gtk_button_new_with_label("Reset");
     gtk_widget_add_css_class(reset_btn, "action-btn");
     gtk_grid_attach(GTK_GRID(action_box), reset_btn, 3, 0, 1, 1);
     g_signal_connect(reset_btn, "clicked", G_CALLBACK(on_reset_clicked), ui);
 
-    /* Status label - centered */
     ui->status_label = gtk_label_new("Select a cell and enter a number");
     gtk_box_append(GTK_BOX(ui->main_container), ui->status_label);
     gtk_widget_set_halign(ui->status_label, GTK_ALIGN_CENTER);
@@ -1083,19 +992,139 @@ void create_game_ui(UIState *ui) {
     update_ui(ui);
 }
 
+/* ========== CLEANUP ========== */
+void cleanup_ui(GtkWidget *window, gpointer data) {
+    UIState *ui = (UIState *)data;
+    if (!ui) return;
+    
+    /* Stop timer */
+    if (ui->timer_id > 0) {
+        g_source_remove(ui->timer_id);
+        ui->timer_id = 0;
+    }
+    
+    /* Free game state */
+    if (ui->game) {
+        save_game(ui->game);
+        g_free(ui->game);
+        ui->game = NULL;
+    }
+    
+    /* Free UI state structure */
+    g_free(ui);
+}
+
+/* ========== UPDATE UI ========== */
+void update_info_bar(UIState *ui) {
+    if (!ui->score_label || !ui->mistakes_label || !ui->difficulty_label || !ui->timer_label) {
+        return;
+    }
+    
+    char buf[64];
+    snprintf(buf, sizeof(buf), "Score: %d", ui->game->score);
+    gtk_label_set_text(GTK_LABEL(ui->score_label), buf);
+
+    snprintf(buf, sizeof(buf), "Mistakes: %d/%d", ui->game->mistakes, MAX_MISTAKES);
+    gtk_label_set_text(GTK_LABEL(ui->mistakes_label), buf);
+
+    const char *dstr = difficulty_to_string(ui->game->difficulty);
+    gtk_label_set_text(GTK_LABEL(ui->difficulty_label), dstr);
+
+    int s = ui->game->seconds_elapsed % 60;
+    int m = (ui->game->seconds_elapsed / 60) % 60;
+    int h = ui->game->seconds_elapsed / 3600;
+    if (h > 0) snprintf(buf, sizeof(buf), "%02d:%02d:%02d", h, m, s);
+    else snprintf(buf, sizeof(buf), "%02d:%02d", m, s);
+    gtk_label_set_text(GTK_LABEL(ui->timer_label), buf);
+}
+
+void update_ui(UIState *ui) {
+    if (ui) {
+        update_info_bar(ui);
+        if (ui->drawing_area) {
+            gtk_widget_queue_draw(ui->drawing_area);
+        }
+    }
+}
+
+/* ========== GAME ACTIONS ========== */
+
+void on_number_clicked(GtkButton *btn, UIState *ui) {
+    if (!ui || !ui->game) return;
+
+    if (ui->game->game_over) {
+        gtk_label_set_text(GTK_LABEL(ui->status_label), "Game over – start a new game!");
+        return;
+    }
+
+    if (ui->selected_row == -1 || ui->selected_col == -1) {
+        gtk_label_set_text(GTK_LABEL(ui->status_label), "Please select a cell first!");
+        return;
+    }
+
+    const char *label = gtk_button_get_label(btn);
+    int num = atoi(label);
+
+    if (ui->game->original[ui->selected_row][ui->selected_col] != 0) {
+        gtk_label_set_text(GTK_LABEL(ui->status_label), "Cannot modify original cells!");
+        return;
+    }
+
+    int prev = ui->game->grid[ui->selected_row][ui->selected_col];
+
+    if (num == 0) {
+        ui->game->grid[ui->selected_row][ui->selected_col] = 0;
+        ui->game->validation[ui->selected_row][ui->selected_col] = 0;
+        gtk_label_set_text(GTK_LABEL(ui->status_label), "Cell cleared");
+    } else {
+        ui->game->grid[ui->selected_row][ui->selected_col] = num;
+        if (is_valid(ui->game->grid, ui->selected_row, ui->selected_col, num)) {
+            ui->game->validation[ui->selected_row][ui->selected_col] = 1;
+            gtk_label_set_text(GTK_LABEL(ui->status_label), "Valid move");
+
+            if (prev == 0) {
+                ui->game->score += 10;
+            }
+        } else {
+            ui->game->validation[ui->selected_row][ui->selected_col] = 2;
+            ui->game->mistakes += 1;
+            char st[128];
+            snprintf(st, sizeof(st), "Invalid move (%d/%d mistakes)", ui->game->mistakes, MAX_MISTAKES);
+            gtk_label_set_text(GTK_LABEL(ui->status_label), st);
+
+            if (ui->game->mistakes >= MAX_MISTAKES) {
+                gtk_label_set_text(GTK_LABEL(ui->status_label), "Game Over – Too many mistakes!");
+                ui->game->game_over = true;
+                set_number_pad_sensitive(ui, false);
+                show_info_dialog(ui->window, "Game Over", "You've made too many mistakes! Try again or start a new game.");
+            }
+        }
+    }
+
+    ui->selected_number = ui->game->grid[ui->selected_row][ui->selected_col] > 0
+                          ? ui->game->grid[ui->selected_row][ui->selected_col] : -1;
+
+    save_game(ui->game);
+    update_ui(ui);
+}
+
 /* ========== ACTIVATE / MAIN ========== */
 void activate(GtkApplication *app, gpointer user_data) {
     srand((unsigned)time(NULL));
 
-    UIState *ui = calloc(1, sizeof(UIState));
-    ui->game = calloc(1, sizeof(SudokuGame));
-    ui->selected_row = -1; ui->selected_col = -1; ui->selected_number = -1;
+    UIState *ui = g_new0(UIState, 1);
+    ui->game = g_new0(SudokuGame, 1);
+    ui->selected_row = -1; 
+    ui->selected_col = -1; 
+    ui->selected_number = -1;
     ui->timer_id = 0;
 
     GtkWidget *window = gtk_application_window_new(app);
     ui->window = GTK_WINDOW(window);
     gtk_window_set_title(GTK_WINDOW(window), "Sudoku DLX Solver");
     gtk_window_set_default_size(GTK_WINDOW(window), 600, 800);
+
+    g_signal_connect(window, "destroy", G_CALLBACK(cleanup_ui), ui);
 
     GtkCssProvider *provider = gtk_css_provider_new();
     gtk_css_provider_load_from_string(provider,
@@ -1105,6 +1134,7 @@ void activate(GtkApplication *app, gpointer user_data) {
         " .menu-btn { font-size: 14px; padding: 8px 16px; font-weight: bold; border-radius: 5px; background: #f0f0f0; }"
     );
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(provider);
 
     create_main_menu(ui);
     gtk_window_present(GTK_WINDOW(window));
