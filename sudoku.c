@@ -53,6 +53,22 @@ typedef struct {
     SudokuGame *game;
 } UIState;
 
+/* ========== DANCING LINKS (DLX) DATA STRUCTURES ========== */
+
+typedef struct DLXNode {
+    struct DLXNode *left, *right, *up, *down;
+    struct DLXNode *column;
+    int row_id;
+    int size; /* only for column headers */
+} DLXNode;
+
+typedef struct {
+    DLXNode *header;
+    DLXNode *columns[324]; /* 4 constraint types × 81 cells */
+    int solution[81];
+    int solution_count;
+    SudokuGame *game;
+} DLXSolver;
 
 /* ========== FILE I/O ========== */
 void save_game(SudokuGame *game) {
@@ -154,23 +170,203 @@ bool is_complete(int grid[SIZE][SIZE]) {
     return true;
 }
 
-bool solve_backtrack(SudokuGame *game, int grid[SIZE][SIZE]) {
+/* ========== DANCING LINKS ALGORITHM ========== */
+
+DLXNode* create_node() {
+    DLXNode *node = (DLXNode*)calloc(1, sizeof(DLXNode));
+    node->left = node->right = node->up = node->down = node;
+    node->column = NULL;
+    node->row_id = -1;
+    node->size = 0;
+    return node;
+}
+
+void cover(DLXNode *col) {
+    col->right->left = col->left;
+    col->left->right = col->right;
+    
+    for (DLXNode *row = col->down; row != col; row = row->down) {
+        for (DLXNode *node = row->right; node != row; node = node->right) {
+            node->down->up = node->up;
+            node->up->down = node->down;
+            node->column->size--;
+        }
+    }
+}
+
+void uncover(DLXNode *col) {
+    for (DLXNode *row = col->up; row != col; row = row->up) {
+        for (DLXNode *node = row->left; node != row; node = node->left) {
+            node->column->size++;
+            node->down->up = node;
+            node->up->down = node;
+        }
+    }
+    
+    col->right->left = col;
+    col->left->right = col;
+}
+
+bool search(DLXSolver *solver, int k) {
+    solver->game->steps++;
+    
+    if (solver->header->right == solver->header) {
+        solver->solution_count = k;
+        return true;
+    }
+    
+    /* Choose column with minimum size (heuristic S) */
+    DLXNode *col = NULL;
+    int min_size = 999999;
+    for (DLXNode *c = solver->header->right; c != solver->header; c = c->right) {
+        if (c->size < min_size) {
+            min_size = c->size;
+            col = c;
+        }
+    }
+    
+    if (col == NULL || col->size == 0) return false;
+    
+    cover(col);
+    
+    for (DLXNode *row = col->down; row != col; row = row->down) {
+        solver->solution[k] = row->row_id;
+        
+        for (DLXNode *node = row->right; node != row; node = node->right) {
+            cover(node->column);
+        }
+        
+        if (search(solver, k + 1)) {
+            return true;
+        }
+        
+        for (DLXNode *node = row->left; node != row; node = node->left) {
+            uncover(node->column);
+        }
+    }
+    
+    uncover(col);
+    return false;
+}
+
+/* Convert Sudoku constraints to exact cover problem */
+void init_dlx_solver(DLXSolver *solver, int grid[SIZE][SIZE]) {
+    solver->header = create_node();
+    solver->solution_count = 0;
+    
+    /* Create 324 column headers:
+       - 81 for cell constraints (each cell must be filled)
+       - 81 for row constraints (each row must have 1-9)
+       - 81 for column constraints (each column must have 1-9)
+       - 81 for box constraints (each 3x3 box must have 1-9)
+    */
+    DLXNode *prev = solver->header;
+    for (int i = 0; i < 324; i++) {
+        DLXNode *col = create_node();
+        solver->columns[i] = col;
+        col->size = 0;
+        col->column = col;
+        
+        prev->right = col;
+        col->left = prev;
+        prev = col;
+    }
+    prev->right = solver->header;
+    solver->header->left = prev;
+    
+    /* Create rows for each possible placement
+       Row ID encoding: r * 81 + c * 9 + (num - 1)
+       where r=row, c=col, num=number (1-9)
+    */
     for (int r = 0; r < SIZE; r++) {
         for (int c = 0; c < SIZE; c++) {
-            if (grid[r][c] == 0) {
-                for (int n = 1; n <= SIZE; n++) {
-                    if (is_valid_placement(grid, r, c, n)) {
-                        grid[r][c] = n;
-                        game->steps++;
-                        if (solve_backtrack(game, grid)) return true;
-                        grid[r][c] = 0;
+            /* If cell is filled, only create row for that number */
+            int start_num = (grid[r][c] != 0) ? grid[r][c] : 1;
+            int end_num = (grid[r][c] != 0) ? grid[r][c] : 9;
+            
+            for (int num = start_num; num <= end_num; num++) {
+                int row_id = r * 81 + c * 9 + (num - 1);
+                int box = (r / 3) * 3 + (c / 3);
+                
+                /* Four constraints for this placement */
+                int constraints[4] = {
+                    r * 9 + c,                    /* Cell constraint */
+                    81 + r * 9 + (num - 1),      /* Row constraint */
+                    162 + c * 9 + (num - 1),     /* Column constraint */
+                    243 + box * 9 + (num - 1)    /* Box constraint */
+                };
+                
+                DLXNode *prev_node = NULL;
+                for (int i = 0; i < 4; i++) {
+                    DLXNode *node = create_node();
+                    node->row_id = row_id;
+                    node->column = solver->columns[constraints[i]];
+                    
+                    /* Link vertically */
+                    node->up = node->column->up;
+                    node->down = node->column;
+                    node->column->up->down = node;
+                    node->column->up = node;
+                    node->column->size++;
+                    
+                    /* Link horizontally */
+                    if (prev_node == NULL) {
+                        node->left = node->right = node;
+                    } else {
+                        node->left = prev_node;
+                        node->right = prev_node->right;
+                        prev_node->right->left = node;
+                        prev_node->right = node;
                     }
+                    prev_node = node;
                 }
-                return false;
             }
         }
     }
-    return true;
+}
+
+void free_dlx_solver(DLXSolver *solver) {
+    /* Free all nodes - traverse through columns */
+    for (int i = 0; i < 324; i++) {
+        DLXNode *col = solver->columns[i];
+        DLXNode *row = col->down;
+        while (row != col) {
+            DLXNode *next_row = row->down;
+            DLXNode *node = row->right;
+            while (node != row) {
+                DLXNode *next_node = node->right;
+                free(node);
+                node = next_node;
+            }
+            free(row);
+            row = next_row;
+        }
+        free(col);
+    }
+    free(solver->header);
+}
+
+bool solve_dlx(SudokuGame *game, int grid[SIZE][SIZE]) {
+    DLXSolver solver;
+    solver.game = game;
+    
+    init_dlx_solver(&solver, grid);
+    
+    bool result = search(&solver, 0);
+    
+    if (result) {
+        /* Extract solution from row IDs */
+        for (int i = 0; i < solver.solution_count; i++) {
+            int row_id = solver.solution[i];
+            int r = row_id / 81;
+            int c = (row_id % 81) / 9;
+            int num = (row_id % 9) + 1;
+            grid[r][c] = num;
+        }
+    }
+    
+    free_dlx_solver(&solver);
+    return result;
 }
 
 /* ========== CAIRO DRAWING ========== */
@@ -399,7 +595,7 @@ void on_number_clicked(GtkButton *btn, UIState *ui) {
     if (!ui || !ui->game) return;
 
     if (ui->game->game_over) {
-        gtk_label_set_text(GTK_LABEL(ui->status_label), "Game over — start a new game!");
+        gtk_label_set_text(GTK_LABEL(ui->status_label), "Game over – start a new game!");
         return;
     }
 
@@ -465,7 +661,7 @@ void on_number_clicked(GtkButton *btn, UIState *ui) {
             char st[128];
             int s = ui->game->seconds_elapsed % 60;
             int m = (ui->game->seconds_elapsed / 60) % 60;
-            snprintf(st, sizeof(st), "🎉 Puzzle solved! Time %02d:%02d — Score: %d", m, s, ui->game->score);
+            snprintf(st, sizeof(st), "🎉 Puzzle solved! Time %02d:%02d – Score: %d", m, s, ui->game->score);
             gtk_label_set_text(GTK_LABEL(ui->status_label), st);
             ui->game->game_over = true;
             set_number_pad_sensitive(ui, false);
@@ -534,19 +730,22 @@ void on_reset_clicked(GtkButton *btn, UIState *ui) {
     gtk_label_set_text(GTK_LABEL(ui->status_label), "Game reset to initial state");
 }
 
-/* Solve action */
+/* Solve action - NOW USES DLX ALGORITHM */
 void on_solve_clicked(GtkButton *btn, UIState *ui) {
     copy_grid(ui->game->grid, ui->game->solution);
     ui->game->steps = 0;
     ui->game->solving = true;
-    solve_backtrack(ui->game, ui->game->solution);
+    
+    /* Use Dancing Links Algorithm X to solve */
+    solve_dlx(ui->game, ui->game->solution);
+    
     copy_grid(ui->game->solution, ui->game->grid);
     for (int i = 0; i < SIZE; i++)
         for (int j = 0; j < SIZE; j++)
             if (ui->game->original[i][j] == 0) ui->game->validation[i][j] = 1;
     update_ui(ui);
     char status[256];
-    snprintf(status, sizeof(status), "✓ Puzzle solved in %d steps!", ui->game->steps);
+    snprintf(status, sizeof(status), "✓ Puzzle solved using DLX in %d steps!", ui->game->steps);
     gtk_label_set_text(GTK_LABEL(ui->status_label), status);
     ui->game->game_over = true;
     set_number_pad_sensitive(ui, false);
@@ -766,7 +965,7 @@ void activate(GtkApplication *app, gpointer user_data) {
 
     GtkWidget *window = gtk_application_window_new(app);
     ui->window = GTK_WINDOW(window);
-    gtk_window_set_title(GTK_WINDOW(window), "Sudoku Cairo Enhanced");
+    gtk_window_set_title(GTK_WINDOW(window), "Sudoku DLX Solver");
     gtk_window_set_default_size(GTK_WINDOW(window), 600, 800);
 
     /* Basic CSS */
@@ -783,7 +982,7 @@ void activate(GtkApplication *app, gpointer user_data) {
 }
 
 int main(int argc, char **argv) {
-    GtkApplication *app = gtk_application_new("org.sudoku.cairo.enhanced", G_APPLICATION_DEFAULT_FLAGS);
+    GtkApplication *app = gtk_application_new("org.sudoku.dlx.solver", G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
     int status = g_application_run(G_APPLICATION(app), argc, argv);
     g_object_unref(app);
