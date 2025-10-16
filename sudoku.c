@@ -1,33 +1,123 @@
 /* ============================================================================
- * SUDOKU.C - Source File for Optimized Sudoku Game
+ * OPTIMIZED SUDOKU WITH MEMORY LEAK FIXES AND REPORT-BASED DIFFICULTY
  * 
- * Implementation of Sudoku game with:
- * - Dancing Links (DLX) Algorithm X solver
- * - GTK4 graphical interface
- * - Report-based difficulty formula
- * - Complete memory leak fixes
+ * IMPROVEMENTS:
+ * 1. Fixed ALL memory leaks (DLX nodes, GTK resources)
+ * 2. Implemented difficulty formula from report (Section 3.2)
+ * 3. Clear function naming and comprehensive documentation
+ * 4. Optimal memory management with proper cleanup
+ * 5. GUI remains IDENTICAL to original
+ * 
+ * DIFFICULTY FORMULA (from report):
+ * - Maps difficulty levels to target clues using formula:
+ *   clues(L) = clip(56 - 3*L, 24, 56)
+ * - Beginner: L=1  → 53 clues (28 removed)
+ * - Medium:   L=4  → 44 clues (37 removed)
+ * - Hard:     L=7  → 35 clues (46 removed)
+ * - Expert:   L=10 → 26 clues (55 removed)
  * 
  * Compilation: gcc -std=c99 -O2 sudoku.c -o sudoku $(pkg-config --cflags --libs gtk4)
- * 
- * Author: Optimized Implementation
- * Date: 2025
  * ========================================================================== */
 
-#include "sudoku.h"
+#include <gtk/gtk.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include <time.h>
 #include <stdio.h>
-#include <limits.h>
 
-/* ========== DIFFICULTY CALCULATION ========== */
+/* ========== CONSTANTS ========== */
+#define GRID_SIZE 9
+#define SUBGRID_SIZE 3
+#define SAVE_FILE_PATH "sudoku_save.dat"
+#define MAX_MISTAKES_ALLOWED 3
+#define TOTAL_CONSTRAINTS 324  // 81 cells + 81 rows + 81 cols + 81 boxes
+#define TOTAL_CELLS 81
+
+/* Difficulty levels mapped to complexity levels from report (Section 3.2) */
+typedef enum {
+    DIFFICULTY_BEGINNER = 1,   // L=1:  53 clues (28 removed)
+    DIFFICULTY_MEDIUM = 4,     // L=4:  44 clues (37 removed)
+    DIFFICULTY_HARD = 7,       // L=7:  35 clues (46 removed)
+    DIFFICULTY_EXPERT = 10     // L=10: 26 clues (55 removed)
+} DifficultyLevel;
+
+/* ========== DATA STRUCTURES ========== */
+
+/* Game state containing all grid data and game progress */
+typedef struct {
+    int current_grid[GRID_SIZE][GRID_SIZE];      // Current state of puzzle
+    int solution_grid[GRID_SIZE][GRID_SIZE];     // Complete solution (DLX)
+    int initial_grid[GRID_SIZE][GRID_SIZE];      // Original puzzle state
+    int validation_status[GRID_SIZE][GRID_SIZE]; // 0=empty, 1=valid, 2=invalid
+    int algorithm_steps;                          // Steps taken by DLX solver
+    bool is_solving;                              // Flag for solving process
+    DifficultyLevel difficulty;                   // Current difficulty
+    int player_score;                             // Current score
+    int mistake_count;                            // Number of mistakes made
+    int elapsed_seconds;                          // Time elapsed
+    bool is_game_over;                            // Game over flag
+} SudokuGameState;
+
+/* UI state containing all GTK widgets and selection state */
+typedef struct {
+    GtkWindow *main_window;
+    GtkWidget *main_game_container;
+    GtkWidget *menu_screen_container;
+    GtkWidget *grid_drawing_area;
+    GtkWidget *number_buttons[10];         // 1-9 number pad buttons
+    GtkWidget *status_message_label;
+    GtkWidget *score_display_label;
+    GtkWidget *mistakes_display_label;
+    GtkWidget *difficulty_display_label;
+    GtkWidget *timer_display_label;
+    int currently_selected_row;
+    int currently_selected_col;
+    int currently_selected_number;
+    guint timer_source_id;
+    SudokuGameState *game_state;
+} UIState;
+
+/* Dancing Links node structure for Algorithm X */
+typedef struct DLXNode {
+    struct DLXNode *left_link;
+    struct DLXNode *right_link;
+    struct DLXNode *up_link;
+    struct DLXNode *down_link;
+    struct DLXNode *column_header;
+    int row_identifier;
+    int column_size;  // Only used for column headers
+} DLXNode;
+
+/* DLX solver state */
+typedef struct {
+    DLXNode *root_header;
+    DLXNode *constraint_columns[TOTAL_CONSTRAINTS];
+    int solution_rows[TOTAL_CELLS];
+    int solution_length;
+    SudokuGameState *game_reference;
+} DLXSolverState;
+
+/* ========== FORWARD DECLARATIONS ========== */
+void build_game_user_interface(UIState *ui);
+void build_main_menu_interface(UIState *ui);
+gboolean timer_tick_callback(gpointer data);
+void refresh_user_interface(UIState *ui);
+void set_number_pad_sensitivity(UIState *ui, bool is_sensitive);
+void handle_number_button_click(GtkButton *button, UIState *ui);
+void cleanup_ui_resources(GtkWidget *window, gpointer data);
+
+/* ========== DIFFICULTY CALCULATION (REPORT FORMULA) ========== */
 
 /**
  * Calculate number of cells to remove based on difficulty level
  * Uses formula from report Section 3.2: clues(L) = clip(56 - 3*L, 24, 56)
  * Then converts to cells_to_remove = 81 - clues
+ * 
+ * @param level: Difficulty level (1, 4, 7, or 10)
+ * @return: Number of cells to remove from complete grid
  */
-int calculate_cells_to_remove_for_difficulty(DifficultyLevel level) {
+static inline int calculate_cells_to_remove_for_difficulty(DifficultyLevel level) {
     // Formula from report: clues = clip(56 - 3*L, 24, 56)
     int target_clues = 56 - (3 * level);
     
@@ -44,7 +134,7 @@ int calculate_cells_to_remove_for_difficulty(DifficultyLevel level) {
 /**
  * Convert difficulty enum to user-friendly string
  */
-const char *get_difficulty_display_name(DifficultyLevel difficulty) {
+static const char *get_difficulty_display_name(DifficultyLevel difficulty) {
     switch (difficulty) {
         case DIFFICULTY_BEGINNER: return "Beginner";
         case DIFFICULTY_MEDIUM:   return "Medium";
@@ -72,7 +162,7 @@ void save_game_to_file(SudokuGameState *game) {
 
 /**
  * Load game state from file
- * Returns true if successful, false otherwise
+ * @return: true if successful, false otherwise
  */
 bool load_game_from_file(SudokuGameState *game) {
     if (!game) return false;
@@ -89,7 +179,7 @@ bool load_game_from_file(SudokuGameState *game) {
 /**
  * Check if a saved game exists
  */
-bool check_saved_game_exists(void) {
+bool check_saved_game_exists() {
     FILE *file = fopen(SAVE_FILE_PATH, "rb");
     if (file) {
         fclose(file);
@@ -110,7 +200,8 @@ bool check_saved_game_exists(void) {
  * @param number: Number to place (1-9)
  * @return: true if placement is valid
  */
-bool is_placement_valid(int grid[GRID_SIZE][GRID_SIZE], int row, int col, int number) {
+static inline bool is_placement_valid(int grid[GRID_SIZE][GRID_SIZE], 
+                                      int row, int col, int number) {
     // Check row and column constraints
     for (int i = 0; i < GRID_SIZE; i++) {
         if (grid[row][i] == number || grid[i][col] == number) {
@@ -139,7 +230,8 @@ bool is_placement_valid(int grid[GRID_SIZE][GRID_SIZE], int row, int col, int nu
  * Validate if a filled cell violates sudoku rules
  * This checks if the current value creates conflicts
  */
-bool is_cell_value_valid(int grid[GRID_SIZE][GRID_SIZE], int row, int col, int number) {
+static inline bool is_cell_value_valid(int grid[GRID_SIZE][GRID_SIZE], 
+                                       int row, int col, int number) {
     // Check row and column (excluding current cell)
     for (int i = 0; i < GRID_SIZE; i++) {
         if (i != col && grid[row][i] == number) return false;
@@ -166,7 +258,7 @@ bool is_cell_value_valid(int grid[GRID_SIZE][GRID_SIZE], int row, int col, int n
 /**
  * Check if grid is completely filled
  */
-bool is_grid_complete(int grid[GRID_SIZE][GRID_SIZE]) {
+static inline bool is_grid_complete(int grid[GRID_SIZE][GRID_SIZE]) {
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
             if (grid[i][j] == 0) {
@@ -182,13 +274,19 @@ bool is_grid_complete(int grid[GRID_SIZE][GRID_SIZE]) {
 /**
  * Copy one grid to another
  */
-void copy_grid_data(int source[GRID_SIZE][GRID_SIZE], int destination[GRID_SIZE][GRID_SIZE]) {
+static inline void copy_grid_data(int source[GRID_SIZE][GRID_SIZE], 
+                                  int destination[GRID_SIZE][GRID_SIZE]) {
     memcpy(destination, source, sizeof(int) * GRID_SIZE * GRID_SIZE);
 }
 
 /**
  * Recursively fill grid with valid numbers using backtracking
  * Uses randomization for variety
+ * 
+ * @param grid: Grid to fill
+ * @param row: Current row
+ * @param col: Current column
+ * @return: true if grid can be filled from this position
  */
 bool fill_grid_recursively(int grid[GRID_SIZE][GRID_SIZE], int row, int col) {
     // Base case: reached end of grid
@@ -249,6 +347,9 @@ void generate_complete_sudoku_grid(int grid[GRID_SIZE][GRID_SIZE]) {
 /**
  * Remove numbers from grid to create puzzle
  * Uses report formula for determining how many to remove
+ * 
+ * @param grid: Complete grid to remove numbers from
+ * @param cells_to_remove: Number of cells to clear
  */
 void remove_numbers_from_grid(int grid[GRID_SIZE][GRID_SIZE], int cells_to_remove) {
     int removed_count = 0;
@@ -271,7 +372,7 @@ void remove_numbers_from_grid(int grid[GRID_SIZE][GRID_SIZE], int cells_to_remov
  * Create and initialize a DLX node
  * All links point to self initially (circular list)
  */
-DLXNode* create_dlx_node(void) {
+static inline DLXNode* create_dlx_node() {
     DLXNode *node = (DLXNode*)calloc(1, sizeof(DLXNode));
     if (!node) return NULL;
     
@@ -291,7 +392,7 @@ DLXNode* create_dlx_node(void) {
  * Cover a column in DLX structure (remove from consideration)
  * This is the core operation of Algorithm X
  */
-void cover_dlx_column(DLXNode *column) {
+static inline void cover_dlx_column(DLXNode *column) {
     // Remove column from header list
     column->right_link->left_link = column->left_link;
     column->left_link->right_link = column->right_link;
@@ -310,7 +411,7 @@ void cover_dlx_column(DLXNode *column) {
  * Uncover a column in DLX structure (restore it)
  * Reverse operation of cover - must be done in exact reverse order
  */
-void uncover_dlx_column(DLXNode *column) {
+static inline void uncover_dlx_column(DLXNode *column) {
     // Restore all rows in reverse order
     for (DLXNode *row = column->up_link; row != column; row = row->up_link) {
         for (DLXNode *node = row->left_link; node != row; node = node->left_link) {
@@ -563,12 +664,13 @@ bool solve_sudoku_with_dlx(SudokuGameState *game, int grid[GRID_SIZE][GRID_SIZE]
  * Draw the sudoku grid using Cairo
  * Handles highlighting, colors, and number display
  */
-void draw_sudoku_grid(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer data) {
+static void draw_sudoku_grid(GtkDrawingArea *area, cairo_t *cr, 
+                            int width, int height, gpointer data) {
     UIState *ui = (UIState *)data;
     SudokuGameState *game = ui->game_state;
 
     double margin = 20;
-    double grid_size = (width < height ? width : height) - 2 * margin;
+    double grid_size = MIN(width, height) - 2 * margin;
     double cell_size = grid_size / GRID_SIZE;
     double start_x = (width - grid_size) / 2;
     double start_y = (height - grid_size) / 2;
@@ -679,14 +781,15 @@ void draw_sudoku_grid(GtkDrawingArea *area, cairo_t *cr, int width, int height, 
  * Handle mouse click on grid
  * Converts screen coordinates to grid cell coordinates
  */
-gboolean handle_grid_click(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
+static gboolean handle_grid_click(GtkGestureClick *gesture, int n_press, 
+                                  double x, double y, gpointer data) {
     GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
     int width = gtk_widget_get_width(widget);
     int height = gtk_widget_get_height(widget);
     UIState *ui = (UIState *)data;
 
     double margin = 20;
-    double grid_size = (width < height ? width : height) - 2 * margin;
+    double grid_size = MIN(width, height) - 2 * margin;
     double cell_size = grid_size / GRID_SIZE;
     double start_x = (width - grid_size) / 2;
     double start_y = (height - grid_size) / 2;
@@ -746,7 +849,7 @@ typedef struct {
 /**
  * Handle confirmation dialog response
  */
-static void handle_confirm_dialog_response(GtkDialog *dialog, int response, gpointer user_data) {
+void handle_confirm_dialog_response(GtkDialog *dialog, int response, gpointer user_data) {
     ConfirmDialogData *data = (ConfirmDialogData*)user_data;
     
     if (response == GTK_RESPONSE_YES && data->callback_function) {
@@ -999,7 +1102,7 @@ void handle_solve_click(GtkButton *button, UIState *ui) {
 }
 
 /**
- * Navigate to main menu
+ * Return to main menu
  */
 void navigate_to_main_menu(UIState *ui) {
     if (ui->timer_source_id) {
